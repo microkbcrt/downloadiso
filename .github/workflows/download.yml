@@ -1,6 +1,6 @@
-# .github/workflows/download.yml
+# .github/workflows/release-downloader.yml
 
-name: Large File Downloader (Split)
+name: Download to Release (Split)
 
 on:
   workflow_dispatch:
@@ -12,43 +12,58 @@ on:
         description: '保存的文件名 (必须带后缀)'
         required: true
 
+# 必须！允许工作流创建 Release
+permissions:
+  contents: write
+
 jobs:
-  download_and_split_job:
+  create_release_and_upload:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 增加磁盘空间，防止下载大文件时空间不足
+      # 为大文件释放更多磁盘空间
       - name: Free up disk space
         run: |
           echo "清理前磁盘空间:"
           df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           echo "清理后磁盘空间:"
           df -h
 
       - name: Download large file
         run: |
           echo "开始下载: ${{ inputs.file_name }}"
-          # 使用 curl, -L 跟随跳转, --retry 增加稳定性
           curl -L --retry 5 --retry-delay 5 -o "${{ inputs.file_name }}" "${{ inputs.file_url }}"
           echo "下载完成!"
 
-      - name: Split the file into 450MB chunks
+      - name: Split the file into 1.8GB chunks
         run: |
-          mkdir split_files
-          split -b 450M "${{ inputs.file_name }}" split_files/part_
+          mkdir release_assets
+          # 分割成最大 1.8GB 的文件块，以确保小于 Release 的 2GB 限制
+          split -b 1800M "${{ inputs.file_name }}" release_assets/part_
           echo "文件已分割!"
 
-      - name: Upload split parts as artifact
-        uses: actions/upload-artifact@v4
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
         with:
-          # Artifact 的名字，每次运行都不同，防止冲突
-          name: split-file-${{ github.run_id }}
-          # 上传整个文件夹
-          path: split_files/
+          # 使用通配符 * 上传 release_assets 文件夹下的所有文件
+          files: release_assets/*
+          
+          # Release 的名字
+          name: "Release - ${{ inputs.file_name }}"
+          
+          # Release 的标签，使用唯一的 Job ID 确保不重复
+          tag_name: "download-${{ github.run_id }}"
+          
+          # Release 的描述
+          body: |
+            File downloaded from:
+            `${{ inputs.file_url }}`
+            
+            **重要:** 请下载所有 'part_' 文件并在本地合并它们。
+            
+          # 标记为预发布，不会通知仓库关注者
+          prerelease: true
