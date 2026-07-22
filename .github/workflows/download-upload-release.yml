@@ -1,0 +1,77 @@
+name: Download and Upload Release Asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "文件下载直链"
+        required: true
+      tag:
+        description: "Release tag，例如 v1.0.0"
+        required: true
+      filename:
+        description: "上传到 Release 后显示的文件名"
+        required: true
+      sha256:
+        description: "可选：文件 SHA256，不填则不校验"
+        required: false
+      create_if_missing:
+        description: "如果 Release 不存在，是否自动创建"
+        type: boolean
+        default: true
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download file
+        run: |
+          mkdir -p dist
+
+          curl -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            -C - \
+            -o "dist/${{ inputs.filename }}" \
+            "${{ inputs.url }}"
+
+      - name: Verify SHA256
+        if: ${{ inputs.sha256 != '' }}
+        run: |
+          echo "${{ inputs.sha256 }}  dist/${{ inputs.filename }}" | sha256sum -c -
+
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ inputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ inputs.tag }} 已存在"
+          else
+            if [ "${{ inputs.create_if_missing }}" = "true" ]; then
+              echo "Release ${{ inputs.tag }} 不存在，正在创建"
+              gh release create "${{ inputs.tag }}" \
+                --repo "${{ github.repository }}" \
+                --title "${{ inputs.tag }}" \
+                --generate-notes
+            else
+              echo "Release ${{ inputs.tag }} 不存在，且未允许自动创建" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Upload asset to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" "dist/${{ inputs.filename }}" \
+            --repo "${{ github.repository }}" \
+            --clobber
