@@ -10,10 +10,10 @@ on:
         description: "Release tag，例如 v1.0.0"
         required: true
       filename:
-        description: "下载后的文件名，也是 Release 中显示的原始文件名"
+        description: "上传到 Release 后显示的文件名"
         required: true
       sha256:
-        description: "可选：原始文件 SHA256，只填 hash，不要带文件名"
+        description: "可选：文件 SHA256，不填则不校验"
         required: false
       create_if_missing:
         description: "如果 Release 不存在，是否自动创建"
@@ -68,7 +68,7 @@ jobs:
 
           printf 'ASSET_NAME=%s\n' "$ASSET_NAME" >> "$GITHUB_ENV"
 
-      - name: Download file with curl
+      - name: Download file
         run: |
           mkdir -p dist
 
@@ -81,7 +81,6 @@ jobs:
             --retry-delay 10 \
             --retry-all-errors \
             --continue-at - \
-            --progress-bar \
             -o "dist/$ASSET_NAME" \
             "$INPUT_URL"
 
@@ -186,13 +185,13 @@ jobs:
             echo "Release $INPUT_TAG 已存在"
           else
             if [ "$CREATE_IF_MISSING" = "true" ]; then
+              echo "Release $INPUT_TAG 不存在，正在创建"
               gh release create "$INPUT_TAG" \
                 --repo "$GITHUB_REPOSITORY" \
                 --title "$INPUT_TAG" \
-                --generate-notes \
-                --target "$GITHUB_SHA"
+                --generate-notes
             else
-              echo "Release $INPUT_TAG 不存在，且未开启自动创建" >&2
+              echo "Release $INPUT_TAG 不存在，且未允许自动创建" >&2
               exit 1
             fi
           fi
