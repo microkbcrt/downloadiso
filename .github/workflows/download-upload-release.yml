@@ -1,4 +1,4 @@
-name: Download and Upload Release Asset
+name: Download and Upload Release Asset with aria2
 
 on:
   workflow_dispatch:
@@ -10,15 +10,26 @@ on:
         description: "Release tag，例如 v1.0.0"
         required: true
       filename:
-        description: "上传到 Release 后显示的文件名"
+        description: "下载后的文件名，也是 Release 中显示的原始文件名"
         required: true
       sha256:
-        description: "可选：文件 SHA256，不填则不校验"
+        description: "可选：原始文件 SHA256，只填 hash，不要带文件名"
         required: false
       create_if_missing:
         description: "如果 Release 不存在，是否自动创建"
         type: boolean
         default: true
+      split_size_mb:
+        description: "分卷大小 MB，建议 1500"
+        required: false
+        default: "1500"
+      zip_compression:
+        description: "大于 2GB 时 ZIP 处理方式：store=仅分卷不压缩，compress=压缩"
+        type: choice
+        options:
+          - store
+          - compress
+        default: store
 
 jobs:
   download-and-upload:
@@ -27,51 +38,176 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      INPUT_URL: ${{ inputs.url }}
+      INPUT_TAG: ${{ inputs.tag }}
+      INPUT_FILENAME: ${{ inputs.filename }}
+      INPUT_SHA256: ${{ inputs.sha256 }}
+      CREATE_IF_MISSING: ${{ inputs.create_if_missing }}
+      SPLIT_SIZE_MB: ${{ inputs.split_size_mb }}
+      ZIP_COMPRESSION: ${{ inputs.zip_compression }}
+      GH_TOKEN: ${{ github.token }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download file
+      - name: Install aria2 and zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 zip unzip
+
+      - name: Prepare safe file name
+        run: |
+          ASSET_NAME="$(basename "$INPUT_FILENAME")"
+
+          if [ -z "$ASSET_NAME" ]; then
+            echo "filename 不能为空" >&2
+            exit 1
+          fi
+
+          printf 'ASSET_NAME=%s\n' "$ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Download file with aria2
         run: |
           mkdir -p dist
 
-          curl -L \
-            --fail \
-            --retry 5 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            -C - \
-            -o "dist/${{ inputs.filename }}" \
-            "${{ inputs.url }}"
+          aria2c \
+            -x16 \
+            -s16 \
+            -k1M \
+            --continue=true \
+            --auto-file-renaming=false \
+            --max-tries=5 \
+            --retry-wait=5 \
+            --dir=dist \
+            --out="$ASSET_NAME" \
+            "$INPUT_URL"
 
       - name: Verify SHA256
-        if: ${{ inputs.sha256 != '' }}
         run: |
-          echo "${{ inputs.sha256 }}  dist/${{ inputs.filename }}" | sha256sum -c -
+          cd dist
+
+          if [ -n "$INPUT_SHA256" ]; then
+            printf '%s  %s\n' "$INPUT_SHA256" "$ASSET_NAME" | sha256sum -c -
+          else
+            echo "未提供 SHA256，跳过校验"
+          fi
+
+      - name: Prepare upload files, split if larger than 2GB
+        run: |
+          set -euo pipefail
+
+          cd dist
+          mkdir -p ../upload
+          rm -f ../upload/* || true
+
+          if ! [[ "$SPLIT_SIZE_MB" =~ ^[0-9]+$ ]]; then
+            echo "split_size_mb 必须是数字" >&2
+            exit 1
+          fi
+
+          SIZE="$(stat -c%s "$ASSET_NAME")"
+          LIMIT=2000000000
+
+          echo "原始文件大小: $SIZE bytes"
+          echo "分卷大小: ${SPLIT_SIZE_MB} MB"
+
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "文件大于 2GB，开始制作 ZIP 分卷"
+
+            ARCHIVE_NAME="${ASSET_NAME}.zip"
+            ARCHIVE_BASE="${ARCHIVE_NAME%.zip}"
+
+            rm -f "$ARCHIVE_NAME" "${ARCHIVE_BASE}".z[0-9][0-9] "${ARCHIVE_BASE}".z[0-9][0-9][0-9] || true
+
+            if [ "$ZIP_COMPRESSION" = "store" ]; then
+              echo "使用 store 模式：仅分卷，不压缩"
+              zip -0 -s "${SPLIT_SIZE_MB}m" "$ARCHIVE_NAME" "$ASSET_NAME"
+            else
+              echo "使用 compress 模式：压缩并分卷"
+              zip -s "${SPLIT_SIZE_MB}m" "$ARCHIVE_NAME" "$ASSET_NAME"
+            fi
+
+            for f in "$ARCHIVE_BASE".zip "$ARCHIVE_BASE".z*; do
+              if [ -f "$f" ]; then
+                mv "$f" ../upload/
+              fi
+            done
+
+            cat > ../upload/README_SPLIT.txt <<EOF
+该文件超过 2GB，已被拆分为 ZIP 分卷。
+
+原始文件名: ${ASSET_NAME}
+分卷基础名: ${ARCHIVE_BASE}
+
+请下载全部分卷到同一目录，包括：
+${ARCHIVE_BASE}.z01
+${ARCHIVE_BASE}.z02
+...
+${ARCHIVE_BASE}.zip
+
+Linux/macOS 合并方法：
+
+zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip
+unzip ${ARCHIVE_BASE}-combined.zip
+
+Windows 可使用支持 ZIP 分卷的工具，例如 7-Zip / WinRAR。
+也可以安装 zip 命令后执行：
+
+zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip
+EOF
+
+            cd ../upload
+            rm -f SHA256SUMS
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
+
+          else
+            echo "文件小于等于 2GB，直接上传原始文件"
+
+            cp "$ASSET_NAME" ../upload/
+
+            if [ -n "$INPUT_SHA256" ]; then
+              printf '%s  %s\n' "$INPUT_SHA256" "$ASSET_NAME" > "../upload/${ASSET_NAME}.sha256"
+            fi
+
+            cd ../upload
+            rm -f SHA256SUMS
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
+          fi
+
+          echo "将要上传的文件："
+          ls -lh
 
       - name: Ensure release exists
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${{ inputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${{ inputs.tag }} 已存在"
+          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $INPUT_TAG 已存在"
           else
-            if [ "${{ inputs.create_if_missing }}" = "true" ]; then
-              echo "Release ${{ inputs.tag }} 不存在，正在创建"
-              gh release create "${{ inputs.tag }}" \
-                --repo "${{ github.repository }}" \
-                --title "${{ inputs.tag }}" \
-                --generate-notes
+            if [ "$CREATE_IF_MISSING" = "true" ]; then
+              gh release create "$INPUT_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "$INPUT_TAG" \
+                --generate-notes \
+                --target "$GITHUB_SHA"
             else
-              echo "Release ${{ inputs.tag }} 不存在，且未允许自动创建" >&2
+              echo "Release $INPUT_TAG 不存在，且未开启自动创建" >&2
               exit 1
             fi
           fi
 
-      - name: Upload asset to release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Upload assets to release
         run: |
-          gh release upload "${{ inputs.tag }}" "dist/${{ inputs.filename }}" \
-            --repo "${{ github.repository }}" \
+          mapfile -t FILES < <(find upload -maxdepth 1 -type f | sort)
+
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "没有可上传的文件" >&2
+            exit 1
+          fi
+
+          printf '上传文件列表:\n'
+          printf '%s\n' "${FILES[@]}"
+
+          gh release upload "$INPUT_TAG" "${FILES[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
             --clobber
