@@ -135,32 +135,32 @@ jobs:
               fi
             done
 
-            cat > ../upload/README_SPLIT.txt <<EOF
-该文件超过 2GB，已被拆分为 ZIP 分卷。
-
-原始文件名: ${ASSET_NAME}
-分卷基础名: ${ARCHIVE_BASE}
-
-请下载全部分卷到同一目录，包括：
-${ARCHIVE_BASE}.z01
-${ARCHIVE_BASE}.z02
-...
-${ARCHIVE_BASE}.zip
-
-Linux/macOS 合并方法：
-
-zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip
-unzip ${ARCHIVE_BASE}-combined.zip
-
-Windows 可使用支持 ZIP 分卷的工具，例如 7-Zip / WinRAR。
-也可以安装 zip 命令后执行：
-
-zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip
-EOF
+            {
+              echo "该文件超过 2GB，已被拆分为 ZIP 分卷。"
+              echo ""
+              echo "原始文件名: ${ASSET_NAME}"
+              echo "分卷基础名: ${ARCHIVE_BASE}"
+              echo ""
+              echo "请下载全部分卷到同一目录，包括："
+              echo "${ARCHIVE_BASE}.z01"
+              echo "${ARCHIVE_BASE}.z02"
+              echo "..."
+              echo "${ARCHIVE_BASE}.zip"
+              echo ""
+              echo "Linux/macOS 合并方法："
+              echo ""
+              echo "zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip"
+              echo "unzip ${ARCHIVE_BASE}-combined.zip"
+              echo ""
+              echo "Windows 可使用支持 ZIP 分卷的工具，例如 7-Zip / WinRAR。"
+              echo "也可以安装 zip 命令后执行："
+              echo ""
+              echo "zip -s 0 ${ARCHIVE_BASE}.zip --out ${ARCHIVE_BASE}-combined.zip"
+            } > ../upload/README_SPLIT.txt
 
             cd ../upload
             rm -f SHA256SUMS
-            find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
+            find . -maxdepth 1 -type f -not -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
 
           else
             echo "文件小于等于 2GB，直接上传原始文件"
@@ -173,7 +173,7 @@ EOF
 
             cd ../upload
             rm -f SHA256SUMS
-            find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
+            find . -maxdepth 1 -type f -not -name 'SHA256SUMS' -exec sha256sum {} + > SHA256SUMS
           fi
 
           echo "将要上传的文件："
