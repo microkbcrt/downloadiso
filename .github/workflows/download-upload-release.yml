@@ -70,18 +70,49 @@ jobs:
 
       - name: Download file
         run: |
+          set -euo pipefail
+
           mkdir -p dist
 
           echo "开始下载: $INPUT_URL"
           echo "保存为: dist/$ASSET_NAME"
 
-          wget \
-            --tries=10 \
-            --waitretry=10 \
-            --continue \
-            --progress=dot:mega \
-            -O "dist/$ASSET_NAME" \
-            "$INPUT_URL"
+          # 外层最大重试轮数（每一轮内部 wget 还会再试 5 次）
+          MAX_ROUNDS=200
+          ROUND=0
+          RETRY_DELAY=15
+
+          while true; do
+            ROUND=$((ROUND+1))
+            echo "===== 第 $ROUND 轮下载（每轮内部再重试 5 次）====="
+
+            if wget \
+              --tries=5 \
+              --waitretry=10 \
+              --read-timeout=60 \
+              --timeout=60 \
+              --dns-timeout=30 \
+              --connect-timeout=30 \
+              --continue \
+              --progress=dot:mega \
+              -O "dist/$ASSET_NAME" \
+              "$INPUT_URL"; then
+              echo "下载成功（第 $ROUND 轮）"
+              break
+            fi
+
+            if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then
+              echo "已达到最大重试轮数 $MAX_ROUNDS，放弃" >&2
+              exit 1
+            fi
+
+            CURRENT_SIZE="$(du -h "dist/$ASSET_NAME" 2>/dev/null | cut -f1 || echo 0)"
+            echo "本轮失败，${RETRY_DELAY} 秒后断点续传重试（当前已下载: ${CURRENT_SIZE}）"
+            sleep "$RETRY_DELAY"
+          done
+
+          echo "下载完成:"
+          ls -lh "dist/$ASSET_NAME"
 
       - name: Verify SHA256
         run: |
